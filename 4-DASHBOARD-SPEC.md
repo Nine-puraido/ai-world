@@ -6,14 +6,14 @@ The dashboard is your **single window into the entire system**. Everything you c
 do via CLI/API/Telegram, you can also do here — but with full visibility.
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                       DASHBOARD                                  │
-│                                                                  │
-│  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐│
-│  │ Chat │ │Tasks │ │ Flow │ │Config│ │Review│ │ Audit│ │Agents││
-│  │ Inbox│ │Board │ │ View │ │Panel │ │Center│ │  Log │ │ Perf ││
-│  └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘│
-└──────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│                            DASHBOARD                                       │
+│                                                                            │
+│  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐│
+│  │ Chat │ │Tasks │ │ Flow │ │Config│ │Review│ │ Audit│ │Agents│ │Agent ││
+│  │ Inbox│ │Board │ │ View │ │Panel │ │Center│ │  Log │ │ Perf │ │ Mgmt ││
+│  └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘│
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -616,6 +616,93 @@ Track each agent's performance over time. Identify underperformers and optimize.
 
 ---
 
+## Page 8: Agent Management (Create/Edit/Delete Agents)
+
+Manage the lifecycle of agent containers. This is a **CRITICAL action** page —
+only a human from the Dashboard can create, edit, or delete agents.
+No agent can create another agent.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  AI World              Chat │ Tasks │ Flow │ Config │ Agents │ Mgmt │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Agent Management                                [+ Create Agent]   │
+│                                                                     │
+│  ┌─────────┬──────────────┬──────────┬──────────┬──────────────────┐│
+│  │ Name    │ Role         │ Status   │ Vault    │ Actions          ││
+│  ├─────────┼──────────────┼──────────┼──────────┼──────────────────┤│
+│  │ Jarvis  │ Software Dev │ ● Running│ Dev      │ [Edit] [Stop]    ││
+│  │ Nova    │ Marketing    │ ● Running│ Marketing│ [Edit] [Stop]    ││
+│  │ Atlas   │ Business Ops │ ○ Stopped│ Ops      │ [Edit] [Start]   ││
+│  │ Sentinel│ DevOps       │ ● Running│ Infra    │ [Edit] [Stop]    ││
+│  └─────────┴──────────────┴──────────┴──────────┴──────────────────┘│
+│                                                                     │
+│  ─── Create New Agent ─────────────────────────────────────────     │
+│                                                                     │
+│  ┌─── Agent Details ─────────────────────────────────────────────┐  │
+│  │                                                                │  │
+│  │  Name:              [___________________]                      │  │
+│  │  Role:              [___________________]                      │  │
+│  │                                                                │  │
+│  │  Planner Model:     [Claude Opus 4.6        ▼]                │  │
+│  │  Worker Model:      [Claude Sonnet 4.5      ▼]                │  │
+│  │  Verifier Model:    [OpenAI GPT-4o          ▼]                │  │
+│  │                                                                │  │
+│  │  1Password Vault:   [Select or create vault ▼]                │  │
+│  │  Service Account:   (auto-created on save)                     │  │
+│  │                                                                │  │
+│  │  Capabilities:                                                 │  │
+│  │  ┌──────────────────────────────────────────────────────┐      │  │
+│  │  │ [✓] code  [✓] test  [ ] deploy  [ ] github          │      │  │
+│  │  │ [ ] facebook-ads  [ ] twitter  [ ] mailchimp         │      │  │
+│  │  │ [ ] stripe  [ ] notion  [ ] gmail  [+ Custom]        │      │  │
+│  │  └──────────────────────────────────────────────────────┘      │  │
+│  │                                                                │  │
+│  │  Budget:                                                       │  │
+│  │  Daily:     [$______]  Monthly:  [$______]  Per task: [$____] │  │
+│  │                                                                │  │
+│  │  [Create Agent]  [Cancel]                                      │  │
+│  │                                                                │  │
+│  │  ⚠️ Creating an agent will:                                     │  │
+│  │     • Spin up a new isolated container                         │  │
+│  │     • Create a 1Password Service Account scoped to its vault   │  │
+│  │     • Register the agent with the Router                       │  │
+│  │     • This action requires human confirmation (CRITICAL)       │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  ─── Agent Details (selected: Jarvis) ──────────────────────────   │
+│                                                                     │
+│  ┌─── Container Info ────────────────────────────────────────────┐  │
+│  │                                                                │  │
+│  │  Container ID:    jarvis-agent-a8f3                             │  │
+│  │  Status:          ● Running (uptime: 14d 3h)                   │  │
+│  │  Memory:          142 MB / 512 MB                              │  │
+│  │  1Password SA:    jarvis-prod (read-only → Dev Vault)          │  │
+│  │  Active Tasks:    3 in progress                                │  │
+│  │                                                                │  │
+│  │  [Edit Config]  [Stop Agent]  [Restart]  [Delete Agent]        │  │
+│  │                                                                │  │
+│  │  ⚠️ Deleting an agent will:                                     │  │
+│  │     • Stop all active tasks for this agent                     │  │
+│  │     • Destroy the container                                    │  │
+│  │     • Revoke the 1Password Service Account                     │  │
+│  │     • Deregister from the Router                               │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Agent Management features:
+- **Create** — spin up a new agent container with its own 1Password SA + vault
+- **Edit** — modify models, budget, capabilities (hot-reload without restart)
+- **Start/Stop** — start or stop an agent container (tasks are paused, not lost)
+- **Delete** — destroy container + revoke SA + deregister from Router (CRITICAL)
+- **All actions are CRITICAL** — require human confirmation from Dashboard
+- **No agent can create another agent** — this is a hard security rule
+
+---
+
 ## Tech Stack for Dashboard
 
 | Component          | Technology                               |
@@ -627,7 +714,7 @@ Track each agent's performance over time. Identify underperformers and optimize.
 | Code diff viewer   | react-diff-viewer or Monaco editor       |
 | Charts/metrics     | Recharts or Tremor                       |
 | Auth               | Simple token auth (single user system)   |
-| Backend API        | Connects to Orchestrator REST API        |
+| Backend API        | Connects to Router + Agent Manager REST APIs |
 
 ---
 
@@ -643,6 +730,7 @@ Track each agent's performance over time. Identify underperformers and optimize.
 | 6     | Audit Log (full searchable event history)       | Month 5   |
 | 7     | Agent Performance (scorecards, trends, actions) | Month 5   |
 | 8     | Revert system (git-based rollback at any step)  | Month 6   |
+| 9     | Agent Management (create/edit/start/stop/delete) | Month 6  |
 
 ---
 

@@ -131,76 +131,6 @@ Jarvis assigns prompt → Sub-agent works (asks Jarvis if confused)
 
 ---
 
-## A Day In Your Life
-
-It's Tuesday morning. You have three AI agents working for you.
-
-### 8:00 AM — You open Telegram / Web Dashboard / CLI
-
-```
-Chat: Jarvis (Software Dev)
-  Jarvis: Good morning. Overnight I completed:
-          ✅ User authentication (JWT + refresh tokens)
-          ✅ Database schema (PostgreSQL)
-          ✅ API endpoints (12 routes, all tested)
-
-          Blocked on 1 item:
-          ⏳ Deploy to production — needs your approval
-          [Approve] [Deny]
-```
-
-```
-Chat: Nova (Marketing)
-  Nova: Daily ad report:
-        Facebook campaign day 3 of 7.
-        Impressions: 12,400 │ Clicks: 348 │ CTR: 2.8%
-        Spend so far: $86 of $200 budget.
-
-        Ad B is outperforming Ad A by 3x.
-        Recommendation: shift remaining budget to Ad B.
-        [Approve] [Deny] [Explain More]
-```
-
-```
-Chat: Atlas (Business Ops)
-  Atlas: Weekly revenue summary:
-         Stripe: $4,230 this week (+12% vs last week)
-         3 invoices sent, 2 paid, 1 overdue (Client X, 5 days late)
-
-         Should I send a reminder email to Client X?
-         [Yes] [No] [Draft first]
-```
-
-### 8:02 AM — You make decisions
-
-```
-You → Jarvis: Approve deploy
-You → Nova: Approve. Shift budget to Ad B.
-You → Atlas: Yes, send reminder
-```
-
-### 8:03 AM — You put your phone down
-
-The agents handle everything. Jarvis deploys. Nova adjusts the ad campaign.
-Atlas sends the email. You check back whenever you want — or don't.
-
-### 6:00 PM — You check the dashboard
-
-```
-Today's Summary
-───────────────
-Jarvis:  6 tasks completed │ $4.20 spent │ 0 failures
-Nova:    3 tasks completed │ $1.80 spent │ 0 failures
-Atlas:   8 tasks completed │ $0.90 spent │ 0 failures
-
-Total spend: $6.90
-All systems normal. No escalations pending.
-```
-
-That's it. That's the product.
-
----
-
 ## The Architecture
 
 ### Core Principle
@@ -214,6 +144,46 @@ like a government, not a dictatorship.
 You (goals) → Planner → Policy → Capability Lease → Worker → Verifier → Result
 ```
 
+### 1Password AI Agent Support
+
+1Password has a first-party **Agentic AI pattern** built for exactly this use case.
+We don't need to build custom credential proxies — 1Password provides the entire
+credential layer out of the box:
+
+- **Connect Server** — a private REST API running on your VM. Two Docker containers
+  (`connect-api` + `connect-sync`). Secrets fetched locally, not over public internet.
+- **Service Accounts** — up to 100 scoped tokens. Each agent gets its own, locked to
+  one vault, read-only. Jarvis can't read Marketing Vault. Nova can't read Dev Vault.
+- **SDKs** (Python, JS, Go) — secrets resolved at runtime using reference URIs like
+  `op://Marketing-Vault/facebook-ads/api-key`. The code never contains actual
+  credentials. Fetched, used for the API call, garbage collected from memory.
+- **Events API** — 365 days of audit logs. Tracks every secret access (who, what, when).
+  Pre-built integrations with Datadog, Splunk, and Panther for anomaly detection.
+
+> **Full details:** see [3-SECURITY.md](3-SECURITY.md) for vault layout, access matrix,
+> and breach response playbook.
+
+### Container Structure
+
+The system uses a **Router + per-agent container** architecture:
+
+- **Router** — a tiny stateless service. No brain, no tokens, no secrets. It just
+  routes incoming messages to the correct agent container. Tiny attack surface.
+- **Agent containers** — each named agent (Jarvis, Nova, Atlas) runs in its own
+  isolated container with its own Planner, Policy Engine, Capability Broker, and
+  Verifier. Each container holds **only its own** 1Password Service Account token
+  scoped to one vault.
+- **Worker Manager** — shared across all agents. Spawns/kills ephemeral worker
+  containers per task. Workers have zero secrets, zero 1Password access.
+- **Agent Manager** — creates, edits, and deletes agent containers. **CRITICAL
+  action** — only a human from the Dashboard can trigger it. No agent can create
+  another agent.
+
+**Why this split?** If a single Orchestrator holds all agent personas and all
+service account tokens, one hack = all vaults compromised. With separate
+containers, each agent only has its own scoped token — blast radius is limited
+to that one agent's vault.
+
 ### The Big Picture
 
 ```
@@ -226,21 +196,29 @@ You (goals) → Planner → Policy → Capability Lease → Worker → Verifier 
                   │  API SERVER   │  ← CLI / Web Dashboard / Telegram
                   └───────┬───────┘
                           │
+                  ┌───────▼───────┐
+                  │    ROUTER     │  ← no brain, no tokens
+                  │  (msg routing │    just routes messages to the
+                  │   only)       │    correct agent container
+                  └───────┬───────┘
+                          │
         ┌─────────────────┼──────────────────┐
         │                 │                  │
   ┌─────▼─────┐    ┌─────▼─────┐    ┌──────▼─────┐
-  │  JARVIS   │    │   NOVA    │    │   ATLAS    │
-  │  SoftDev  │    │ Marketing │    │ Biz Ops    │
-  └─────┬─────┘    └─────┬─────┘    └──────┬─────┘
-        │                │                  │
-   (each agent has the same internal structure below)
+  │  JARVIS   │    │   NOVA    │    │   ATLAS    │     each agent
+  │  CONTAINER│    │ CONTAINER │    │ CONTAINER  │     is its own
+  │  SoftDev  │    │ Marketing │    │ Biz Ops    │     isolated process
+  └─────┬─────┘    └─────┬─────┘    └──────┬─────┘     with its own
+        │                │                  │          1Password token
+   (each agent container has the same internal structure below)
         │
         ▼
   ┌──────────────────────────────────────────────────────────┐
-  │  INSIDE JARVIS — these are not separate systems.         │
-  │  They are how Jarvis works internally.                   │
+  │  INSIDE EACH AGENT CONTAINER                             │
+  │  (e.g. Jarvis) — one container per named agent.          │
+  │  Each container has its own 1Password Service Account.   │
   │                                                          │
-  │  Planner = Jarvis's brain (the AI / LLM)                │
+  │  Planner = the agent's brain (the AI / LLM)             │
   │  Policy Engine = a config file with rules (not AI)       │
   │  Broker = a permission system for temp access (not AI)   │
   │                                                          │
@@ -253,20 +231,6 @@ You (goals) → Planner → Policy → Capability Lease → Worker → Verifier 
   │       └──────────────┼──────────────┘                    │
   │                      │                                   │
   │           ┌──────────▼──────────┐                        │
-  │           │   WORKER MANAGER    │                        │
-  │           │   (isolated runner) │                        │
-  │           └──────────┬──────────┘                        │
-  │                      │                                   │
-  │       ┌──────────────┼──────────────┐                    │
-  │       │              │              │                    │
-  │  ┌────▼────┐   ┌────▼────┐   ┌────▼────┐               │
-  │  │ Worker  │   │ Worker  │   │ Worker  │               │
-  │  │ (temp)  │   │ (temp)  │   │ (temp)  │               │
-  │  │ task-1  │   │ task-2  │   │ task-3  │               │
-  │  └────┬────┘   └────┬────┘   └────┬────┘               │
-  │       └──────────────┼──────────────┘                    │
-  │                      │                                   │
-  │           ┌──────────▼──────────┐                        │
   │           │     VERIFIER        │                        │
   │           │     CHECKS          │                        │
   │           │   [different LLM]   │                        │
@@ -274,7 +238,116 @@ You (goals) → Planner → Policy → Capability Lease → Worker → Verifier 
   │                      │                                   │
   │                   Result                                 │
   └──────────────────────────────────────────────────────────┘
+                         │
+              ┌──────────▼──────────┐
+              │   WORKER MANAGER    │  ← shared across all agents
+              │   (isolated runner) │    spawns/kills worker containers
+              └──────────┬──────────┘
+                         │
+          ┌──────────────┼──────────────┐
+          │              │              │
+     ┌────▼────┐   ┌────▼────┐   ┌────▼────┐
+     │ Worker  │   │ Worker  │   │ Worker  │
+     │ (temp)  │   │ (temp)  │   │ (temp)  │
+     │ task-1  │   │ task-2  │   │ task-3  │
+     └─────────┘   └─────────┘   └─────────┘
 ```
+
+### Full Flow Example: Nova Launches a Facebook Ad Campaign
+
+Here's exactly what happens when you send a Telegram message to Nova —
+every container, every secret resolution, every security check.
+
+```
+1. YOU TYPE ON TELEGRAM
+   "Nova, launch the spring sale campaign on Facebook. $200 budget, 7 days."
+         │
+         ▼
+2. TELEGRAM → API SERVER (webhook)
+   API Server checks your Telegram user ID → ✅ verified
+   Creates a goal in PostgreSQL.
+   Publishes to Redis Stream → "goals:incoming"
+         │
+         ▼
+3. ROUTER (always running)
+   Reads the goal → message is addressed to Nova.
+   Routes to Nova Agent Container.
+   (Router never sees secrets — just opens the right door.)
+         │
+         ▼
+4. NOVA AGENT CONTAINER (always running)
+   Nova's Planner calls Claude Sonnet → "Break this into tasks..."
+   Returns 3 tasks:
+     task-1: Create ad creatives (copy + images)      → LOW risk
+     task-2: Configure Facebook campaign ($200, 7d)    → MEDIUM risk
+     task-3: Launch campaign (spend real money)         → CRITICAL → needs human OK
+   Policy Engine approves task-1 and task-2.
+   Broker creates capability leases in PostgreSQL.
+         │
+         ▼
+5. WORKER CONTAINER SPAWNS (task-1: ad creatives)
+   Worker Manager: docker run --rm worker-image ...
+   Worker writes ad copy + image prompts to /workspace/task-1/
+   Worker has NO API keys, NO 1Password access.
+   Finishes → sends task.complete → container destroyed.
+         │
+         ▼
+6. NOVA REVIEWS task-1
+   Planner checks output → "Good. Proceed."
+   Verifier gates: ✅ scope check, ✅ no secrets in output
+   Verifier AI (GPT-4o): ✅ copy looks professional
+         │
+         ▼
+7. WORKER CONTAINER SPAWNS (task-2: configure campaign)
+   Worker: "Set up Facebook campaign with these creatives"
+   Worker sends action request → Nova Agent Container handles it:
+
+     Nova uses nova-prod Service Account (scoped to Marketing Vault only)
+     Nova calls: client.secrets.resolve("op://Marketing-Vault/facebook-ads/api-key")
+            │
+            ▼
+     1Password Connect (on same VM):
+       checks: nova-prod → Marketing Vault → allowed ✅
+       returns Facebook API key
+            │
+            ▼
+     Nova calls Facebook Ads API → creates campaign (paused, not launched)
+     API key garbage collected from memory (~100ms window)
+     Returns to Worker: "Campaign created, ID: 98765, status: PAUSED"
+
+   Worker never saw the Facebook API key.
+   Container destroyed.
+         │
+         ▼
+8. TASK-3 ESCALATED (CRITICAL — real money)
+   Nova → Router → API Server → Telegram:
+   "Campaign ready. $200 budget, 7 days, spring sale.
+    Preview: [link]. Ready to launch?"
+    [Approve] [Deny] [Edit Budget]
+         │
+         ▼
+9. YOU TAP [Approve] ON TELEGRAM
+         │
+         ▼
+10. NOVA LAUNCHES
+    Nova resolves Facebook API key again (same 1Password flow as step 7)
+    Calls Facebook API → campaign status: ACTIVE
+    API key garbage collected.
+         │
+         ▼
+11. DONE
+    Nova → Router → API Server → Telegram:
+    "✅ Spring sale campaign live!
+     Budget: $200 │ Duration: 7 days │ Ad set ID: 98765
+     I'll send daily performance reports."
+
+    Total: 3 tasks │ 2 waves │ 8 minutes │ $0.47 │ you typed 2 messages
+```
+
+**Key takeaway:** Nova's container is the **only** thing that ever touches
+Marketing Vault. The Router, workers, Jarvis, and Atlas never see those
+credentials. If Nova gets hacked, you revoke `nova-prod`, isolate Nova's
+container, and every other agent keeps working normally.
 
 ---
 
@@ -327,6 +400,7 @@ agents:
     worker_model: claude-sonnet-4-5        # cost-effective execution
     verifier_model: openai/gpt-4o          # different provider
     capabilities: [code, test, deploy, github]
+    vault: "Dev-Vault"                     # 1Password vault this agent can access
     budget:
       daily: $15
       monthly: $300
@@ -339,6 +413,7 @@ agents:
     worker_model: claude-haiku-4-5
     verifier_model: claude-sonnet-4-5
     capabilities: [facebook-ads, twitter, mailchimp, analytics, web-research]
+    vault: "Marketing-Vault"
     budget: { daily: $5, monthly: $100, per_task: $2 }
 
   atlas:
@@ -348,6 +423,7 @@ agents:
     worker_model: claude-haiku-4-5
     verifier_model: claude-sonnet-4-5
     capabilities: [stripe, notion, gmail, google-sheets, quickbooks]
+    vault: "Ops-Vault"
     budget: { daily: $3, monthly: $60, per_task: $1 }
 
   sentinel:
@@ -357,6 +433,7 @@ agents:
     worker_model: claude-sonnet-4-5
     verifier_model: openai/gpt-4o
     capabilities: [aws, docker, ssh, monitoring, ssl]
+    vault: "Infra-Vault"
     budget: { daily: $10, monthly: $200, per_task: $5 }
 ```
 
@@ -396,7 +473,7 @@ No long-running agents. No cross-task contamination. No stale state.
 
 ## Dashboard
 
-Your control panel. 7 pages. Full spec in [4-DASHBOARD-SPEC.md](4-DASHBOARD-SPEC.md).
+Your control panel. 8 pages. Full spec in [4-DASHBOARD-SPEC.md](4-DASHBOARD-SPEC.md).
 
 | Page | What it does |
 |---|---|
@@ -407,6 +484,7 @@ Your control panel. 7 pages. Full spec in [4-DASHBOARD-SPEC.md](4-DASHBOARD-SPEC
 | Review Center | Post-task code diff, full conversation, decision log, cost breakdown |
 | Audit Log | Searchable chronological log of every event. Export as CSV/JSON |
 | Agent Performance | Monthly scorecards, failure breakdown, trends, actions |
+| Agent Management | Create, edit, start, stop, delete agent containers from the UI |
 
 ---
 
@@ -449,8 +527,13 @@ Cost: ~$20-40/month + API usage
 
 ```
 One VM (24/7) — 8 vCPU, 16GB RAM
-├── [Container] Orchestrator
-├── [Container] Worker Manager (rootless Docker, non-root user)
+├── [Container] Router (message routing only — no brain, no tokens)
+├── [Container] Jarvis Agent (Planner + Policy + Broker + Verifier + own 1Password SA)
+├── [Container] Nova Agent (Planner + Policy + Broker + Verifier + own 1Password SA)
+├── [Container] Atlas Agent (Planner + Policy + Broker + Verifier + own 1Password SA)
+├── [Container] Agent Manager (create/edit/delete agents — CRITICAL action, human only)
+├── [Container] 1Password Connect API + Sync (private secret REST API)
+├── [Container] Worker Manager (rootless Docker, non-root user — shared)
 ├── [Container] Redis
 ├── [Container] PostgreSQL
 ├── [Container] Dashboard (Next.js)
@@ -459,10 +542,14 @@ One VM (24/7) — 8 vCPU, 16GB RAM
 Cost: ~$40-80/month + API usage
 ```
 
+**Why separate agent containers?** If one Orchestrator holds all agent personas
+and all 1Password tokens, one hack = all vaults compromised. With separate
+containers, each agent has its own scoped token — blast radius is limited.
+
 ### Phase 3: Multi-Machine (At Scale)
 
 ```
-VM 1 (Brain):   Orchestrator + Redis + PostgreSQL + Dashboard
+VM 1 (Brain):   Router + Agent Containers + Agent Manager + Redis + PostgreSQL + Dashboard
 VM 2 (Workers): Worker Manager + ephemeral containers
 VM 3 (GPU):     Image/video/ML workers (if needed)
 
@@ -478,7 +565,9 @@ Cost: $200+/month
 
 | Component         | Technology                                |
 |-------------------|-------------------------------------------|
-| Orchestrator      | Python (FastAPI) or Node.js (Express)     |
+| Router            | Lightweight Python/Node service (no LLM, no tokens — routing only) |
+| Agent Containers  | Python (FastAPI) or Node.js — one per named agent |
+| Agent Manager     | Python (FastAPI) or Node.js — CRITICAL action, human-only |
 | Planner LLM       | Claude Opus (strong reasoning)            |
 | Worker LLM        | Claude Sonnet / Haiku (cost-effective)    |
 | Verifier LLM      | OpenAI GPT-4o (different provider)        |
@@ -487,7 +576,7 @@ Cost: $200+/month
 | Capability Broker | Capability classes + lease store (PG)     |
 | Workflow State    | PostgreSQL (state machine) + Redis Streams|
 | Worker Manager    | Isolated runner API (rootless Docker)     |
-| Secrets           | Docker secrets / HashiCorp Vault          |
+| Secrets           | 1Password Connect + Service Accounts + SDK |
 | Dashboard         | Next.js + Tailwind + shadcn/ui + WebSocket|
 | Chat Interface    | Telegram Bot API (primary), Web UI, CLI   |
 
@@ -522,10 +611,12 @@ Cost: $200+/month
 | 6     | Guardrails, kill switch, overnight mode            | Month 3  |
 | 7     | Dockerize workers (ephemeral containers)           | Month 3  |
 | 8     | Web dashboard (chat, task board, flow view)        | Month 4  |
-| 9     | Multi-agent support (Nova, Atlas, Sentinel)        | Month 5  |
-| 10    | Performance tracking + agent review                | Month 5  |
-| 11    | Revert system                                      | Month 6  |
-| 12    | Multi-machine scaling (if needed)                  | Month 6+ |
+| 9     | Router + per-agent containers (split Orchestrator) | Month 4  |
+| 10    | Multi-agent support (Nova, Atlas, Sentinel)        | Month 5  |
+| 11    | Agent Manager (create/edit/delete agents from UI)  | Month 5  |
+| 12    | Performance tracking + agent review                | Month 5  |
+| 13    | Revert system                                      | Month 6  |
+| 14    | Multi-machine scaling (if needed)                  | Month 6+ |
 
 ---
 

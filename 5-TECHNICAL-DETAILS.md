@@ -9,12 +9,16 @@ You send a Telegram message. Here's what physically happens on your VM.
 ```
 YOUR VM
 ├── API Server          (~50-100MB)   ← listens for Telegram webhooks
-├── Orchestrator        (~100-200MB)  ← Jarvis's brain (Planner + Policy + Broker)
-├── Worker Manager      (~30-50MB)    ← lightweight, just listens for spawn requests
+├── Router              (~30-50MB)    ← routes messages to agent containers (no brain, no tokens)
+├── Jarvis Agent        (~100-200MB)  ← Planner + Policy + Broker + Verifier + own 1Password SA
+├── Nova Agent          (~100-200MB)  ← own container, own 1Password SA
+├── Atlas Agent         (~100-200MB)  ← own container, own 1Password SA
+├── Agent Manager       (~30-50MB)    ← create/edit/delete agents (CRITICAL, human-only)
+├── Worker Manager      (~30-50MB)    ← lightweight, just listens for spawn requests (shared)
 ├── Redis               (~30-50MB)    ← message bus
 └── PostgreSQL          (~100-200MB)  ← state + audit log
 
-Idle RAM: ~400-600MB total
+Idle RAM: ~600-1000MB total (scales with number of agents)
 ```
 
 Worker containers are **OFF**. They don't exist until a task needs them.
@@ -34,41 +38,48 @@ Worker containers are **OFF**. They don't exist until a task needs them.
 3. API SERVER (always running)
    Checks: is this from your Telegram user ID? ✅
    Creates a goal in PostgreSQL.
-   Publishes to Redis Stream → "goals:jarvis"
+   Publishes to Redis Stream → "goals:incoming"
          │
          ▼
-4. ORCHESTRATOR (always running, listening on Redis)
+4. ROUTER (always running, listening on Redis)
+   Looks at the goal → which agent should handle this?
+   Routes to the correct agent container (e.g. Jarvis).
+   Router has NO brain, NO tokens — just routing logic.
+         │
+         ▼
+5. JARVIS AGENT CONTAINER (always running, listening on Redis)
    Jarvis's Planner calls LLM (Anthropic API → Claude Opus).
    "Break this goal into tasks..."
    Returns: 5 tasks with dependency graph.
    Policy Engine checks each task → approved.
    Broker creates capability leases in PostgreSQL.
+   Jarvis resolves secrets via its own 1Password Service Account.
 
-   (No containers spawned yet. This is all inside the Orchestrator process.)
+   (No worker containers spawned yet. This is all inside Jarvis's container.)
          │
          ▼
-5. WORKER CONTAINERS WAKE UP
-   Orchestrator → Worker Manager: "Spawn worker for task-1"
+6. WORKER CONTAINERS WAKE UP
+   Jarvis Agent → Worker Manager: "Spawn worker for task-1"
    Worker Manager: docker run --rm worker-image ...
    Container starts (~2 seconds).
 
    Worker (task-1):
      Reads assignment from Redis.
-     Calls LLM via tool proxy (Orchestrator makes the API call).
+     Calls LLM via tool proxy (agent container makes the API call).
      Writes code to /workspace/task-1/.
      Sends heartbeats every 10s.
      Finishes → sends task.complete → container auto-destroyed.
          │
          ▼
-6. REPEAT PER WAVE
-   task-1 done → Verifier checks (Orchestrator calls GPT-4o, no container needed)
+7. REPEAT PER WAVE
+   task-1 done → Verifier checks (inside Jarvis container, calls GPT-4o)
               → merged to main
-              → task-2 unblocked → new container spawns → works → dies
+              → task-2 unblocked → new worker container spawns → works → dies
               → ...until all tasks done...
          │
          ▼
-7. RESULT GOES BACK TO YOU
-   Orchestrator composes summary → Redis → API Server
+8. RESULT GOES BACK TO YOU
+   Jarvis Agent composes summary → Redis → Router → API Server
    API Server calls Telegram Bot API → sendMessage
    Telegram servers → your phone → notification pops up
 
@@ -77,9 +88,10 @@ Worker containers are **OFF**. They don't exist until a task needs them.
 
 ### Key insight
 
-Jarvis doesn't "wake up." The Orchestrator is always running, always listening.
-What wakes up and dies are the **workers** — they get spawned per task and
-destroyed when done. The manager stays at his desk 24/7.
+Jarvis doesn't "wake up." Each agent container is always running, always listening.
+The Router is always running, routing messages to the right agent. What wakes up
+and dies are the **workers** — they get spawned per task and destroyed when done.
+The agents stay at their desks 24/7. The Router just opens the right door.
 
 ---
 
@@ -89,14 +101,98 @@ destroyed when done. The manager stays at his desk 24/7.
 **Approach 2** (Redis Streams) for transport/orchestration — durable, async, container-friendly.
 
 ```
-┌─────────────┐                              ┌─────────────────┐
-│  MASTER AI  │                              │  WORKER         │
-│             │    Redis Streams (durable)    │  (API tool loop)│
-│  Planner    │◄────────────────────────────►│                 │
-│  Policy     │  task:{id}:in / task:{id}:out│  Claude API +   │
-│  Broker     │                              │  sandboxed tools│
-└─────────────┘                              └─────────────────┘
+                    ┌──────────┐
+                    │  ROUTER  │  ← routes messages, no brain, no tokens
+                    └────┬─────┘
+                         │
+        ┌────────────────┼────────────────┐
+        │                │                │
+┌───────▼──────┐  ┌──────▼───────┐ ┌──────▼───────┐
+│ JARVIS AGENT │  │ NOVA AGENT   │ │ ATLAS AGENT  │  ← each in own container
+│              │  │              │ │              │    with own 1Password SA
+│ Planner      │  │ Planner      │ │ Planner      │
+│ Policy       │  │ Policy       │ │ Policy       │
+│ Broker       │  │ Broker       │ │ Broker       │
+│ Verifier     │  │ Verifier     │ │ Verifier     │
+└───────┬──────┘  └──────────────┘ └──────────────┘
+        │
+        │  Redis Streams (durable)
+        │  task:{id}:in / task:{id}:out
+        │
+┌───────▼──────────┐
+│  WORKER          │  ← ephemeral container
+│  (API tool loop) │
+│  Claude API +    │    LLM calls proxied through
+│  sandboxed tools │    agent container (worker has no API key)
+└──────────────────┘
 ```
+
+---
+
+## Agent Lifecycle Management
+
+The Agent Manager handles creating, editing, and deleting agent containers.
+This is a **CRITICAL action** — only a human from the Dashboard can trigger it.
+No agent can create another agent.
+
+### How Agent Manager Creates a New Agent
+
+```
+Human clicks [Create Agent] in Dashboard
+  │
+  ▼
+Agent Manager:
+  │ 1. Validates config (name, role, models, capabilities, budget)
+  │ 2. Creates a new 1Password Vault for the agent (if needed)
+  │ 3. Creates a 1Password Service Account scoped to that vault (read-only)
+  │ 4. Stores the Service Account token as a container secret
+  │ 5. Spins up a new Docker container with:
+  │      • Planner + Policy Engine + Broker + Verifier
+  │      • The agent's 1Password Service Account token
+  │      • Agent config (models, capabilities, budget)
+  │ 6. Registers the agent with the Router (so messages can be routed to it)
+  │ 7. Registers the agent in PostgreSQL (for tracking + Dashboard)
+  │
+  ▼
+New agent container is running and ready to receive goals via Router
+```
+
+### Agent Lifecycle State Machine
+
+```
+CREATING → STARTING → RUNNING → STOPPING → STOPPED
+                │         │         │
+                │         │         └──► DELETING → DELETED
+                │         │
+                │         ├──► RESTARTING → RUNNING
+                │         │
+                │         └──► ERROR (container crash / health check fail)
+                │                │
+                │                └──► RESTARTING → RUNNING (auto-restart)
+                │
+                └──► CREATE_FAILED (container didn't start / SA creation failed)
+```
+
+### What Agent Manager Controls
+
+```
+Create agent:   vault + SA + container + Router registration
+Edit agent:     hot-reload config (models, budget, capabilities) without restart
+Start agent:    start a stopped container (tasks resume from where they paused)
+Stop agent:     gracefully stop container (pause active tasks, keep state)
+Restart agent:  stop + start (useful after config changes that need restart)
+Delete agent:   stop all tasks → destroy container → revoke SA → deregister from Router
+```
+
+### Security Rules
+
+- **Human-only**: Agent Manager only accepts requests from the Dashboard
+  authenticated as the human owner. No API or agent can call it.
+- **No self-replication**: No agent can call Agent Manager. This is enforced
+  at the network level (agents cannot reach Agent Manager's port) and at the
+  auth level (requires human session token).
+- **Audit trail**: Every Agent Manager action is logged to PostgreSQL with
+  the human's identity, timestamp, and full action details.
 
 ---
 
@@ -802,7 +898,7 @@ tools = SandboxedTools(WORKSPACE, CAPABILITIES)
 pending_replies = {}  # replyTo ID → asyncio.Future
 
 # NOTE: Worker does NOT have an LLM API key.
-# All LLM calls go through the tool proxy on the Orchestrator.
+# All LLM calls go through the tool proxy on the agent container.
 # The worker sends a "llm.request" message and gets back the response.
 # This prevents prompt-injected code from leaking API keys.
 
@@ -965,8 +1061,8 @@ def handle_tool_call(tool_name, tool_input, tool_id):
 def call_llm_via_proxy(model, max_tokens, system, tools, messages):
     """
     Worker does NOT call the LLM API directly.
-    It sends the request to Orchestrator, which holds the real API key,
-    makes the call, and returns the response.
+    It sends the request to the agent container, which holds the real API key
+    (resolved via 1Password SDK), makes the call, and returns the response.
     This prevents prompt-injected code from leaking API keys.
     """
     response = ask_master("llm.request", {
@@ -992,8 +1088,8 @@ def run():
     send_to_master({"type": "progress", "payload": {"status": "starting"}})
 
     while True:
-        # Worker calls LLM via tool proxy (Orchestrator holds the real API key).
-        # Worker sends the messages/tools to Orchestrator, Orchestrator calls
+        # Worker calls LLM via tool proxy (agent container holds the real API key).
+        # Worker sends the messages/tools to the agent container, which calls
         # the LLM API and returns the response. Worker never sees the API key.
         response = call_llm_via_proxy(
             model="claude-sonnet-4-5-20250929",
