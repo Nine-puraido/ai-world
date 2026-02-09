@@ -7,7 +7,7 @@ Sub-agents are standalone capable, but Master AI validates them for accuracy.
 
 ---
 
-## PHASE 1: You → Master AI (Goal Assignment)
+## PHASE 1: You → Master AI (Goal Assignment).
 
 ```
 You (Telegram / Dashboard / CLI):
