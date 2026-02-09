@@ -161,7 +161,7 @@ touch .env
 
 > **Note:** `.env` with plaintext keys is fine for local prototype development.
 > For production / 24/7 autonomy, migrate to Docker secrets or HashiCorp Vault
-> (see Security section in ARCHITECTURE.md).
+> (see [3-SECURITY.md](3-SECURITY.md)).
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-your-key-here
@@ -243,7 +243,7 @@ Month 5:   Multi-agent support (Nova, Atlas, Sentinel)
 Month 6:   Revert system, multi-machine scaling (if needed)
 ```
 
-> Full 12-phase build order with details: see ARCHITECTURE.md → Build Order.
+> Full 12-phase build order with details: see [1-ARCHITECTURE.md](1-ARCHITECTURE.md) → Build Order.
 
 ---
 
