@@ -82,7 +82,7 @@ JARVIS (Manager) receives your goal
 │
 │
 ├── 6. ALL CODE DONE. Asks you to approve deploy.
-│      You: "Approve" (one tap on Telegram)
+│      You: "Approve" (one tap on Telegram / Dashboard / CLI)
 │
 │      ┌─── SUB-AGENT E (task-5: Deploy) ─────────────────┐
 │      │ Deploys frontend to Vercel, API to Railway        │
@@ -118,7 +118,7 @@ Jarvis assigns prompt → Sub-agent works (asks Jarvis if confused)
 
 It's Tuesday morning. You have three AI agents working for you.
 
-### 8:00 AM — You open Telegram
+### 8:00 AM — You open Telegram / Web Dashboard / CLI
 
 ```
 Chat: Jarvis (Software Dev)
@@ -526,7 +526,7 @@ Sub-agents are standalone capable, but Master AI validates them for accuracy.
 ### PHASE 1: You → Master AI (Goal Assignment)
 
 ```
-You (Telegram):
+You (Telegram / Dashboard / CLI):
   "Build me a todo app with user auth. Deploy to staging."
 ```
 
@@ -968,7 +968,7 @@ MASTER AI (internal):
 ```
 
 ```
-MASTER AI → You (Telegram):
+MASTER AI → You (Telegram / Dashboard / CLI):
 
   "All code tasks complete and merged.
    - 4 tasks merged to main
@@ -1007,7 +1007,7 @@ WORKER (task-5):
 ```
 
 ```
-MASTER AI → You (Telegram):
+MASTER AI → You (Telegram / Dashboard / CLI):
 
   "✅ Deployed!
 
@@ -1220,7 +1220,7 @@ guardrails:
       - 3 consecutive failures
       - daily budget exceeded
       - unknown error type
-    action: pause all workers, notify human via Telegram
+    action: pause all workers, notify human via Telegram / Dashboard
 ```
 
 ---
